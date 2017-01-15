@@ -6,23 +6,14 @@
 // If you are new to ImGui, see examples/README.txt and documentation at the top of imgui.cpp.
 // https://github.com/ocornut/imgui
 
-#include <imgui.h>
-
-// GLFW
-#define GLFW_INCLUDE_NONE
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-#ifdef _WIN32
-#undef APIENTRY
-#define GLFW_EXPOSE_NATIVE_WIN32
-#define GLFW_EXPOSE_NATIVE_WGL
-#include <GLFW/glfw3native.h>
-#endif
-
+#include <vulkan/vulkan.h>
 #include "imgui_impl_glfw_vulkan.h"
 
-// GLFW Data
-static GLFWwindow*  g_Window = NULL;
+void ImGui_ImplGlfwVulkan_InitWindow(void* window, bool install_callbacks, ImGuiIO& io);
+void ImGui_ImplGlfwVulkan_NewFrame();
+static const char* ImGui_ImplGlfwVulkan_GetClipboardText(void* user_data);
+static void ImGui_ImplGlfwVulkan_SetClipboardText(void* user_data, const char* text);
+
 static double       g_Time = 0.0f;
 static bool         g_MousePressed[3] = { false, false, false };
 static float        g_MouseWheel = 0.0f;
@@ -314,42 +305,6 @@ void ImGui_ImplGlfwVulkan_RenderDrawLists(ImDrawData* draw_data)
     }
 }
 
-static const char* ImGui_ImplGlfwVulkan_GetClipboardText(void* user_data)
-{
-    return glfwGetClipboardString((GLFWwindow*)user_data);
-}
-
-static void ImGui_ImplGlfwVulkan_SetClipboardText(void* user_data, const char* text)
-{
-    glfwSetClipboardString((GLFWwindow*)user_data, text);
-}
-
-void ImGui_ImplGlfwVulkan_MouseButtonCallback(GLFWwindow*, int button, int action, int /*mods*/)
-{
-    if (action == GLFW_PRESS && button >= 0 && button < 3)
-        g_MousePressed[button] = true;
-}
-
-void ImGui_ImplGlfwVulkan_ScrollCallback(GLFWwindow*, double /*xoffset*/, double yoffset)
-{
-    g_MouseWheel += (float)yoffset; // Use fractional mouse wheel, 1.0 unit 5 lines.
-}
-
-void ImGui_ImplGlfwVulkan_KeyCallback(GLFWwindow*, int key, int, int action, int mods)
-{
-    ImGuiIO& io = ImGui::GetIO();
-    if (action == GLFW_PRESS)
-        io.KeysDown[key] = true;
-    if (action == GLFW_RELEASE)
-        io.KeysDown[key] = false;
-
-    (void)mods; // Modifiers are not reliable across systems
-    io.KeyCtrl = io.KeysDown[GLFW_KEY_LEFT_CONTROL] || io.KeysDown[GLFW_KEY_RIGHT_CONTROL];
-    io.KeyShift = io.KeysDown[GLFW_KEY_LEFT_SHIFT] || io.KeysDown[GLFW_KEY_RIGHT_SHIFT];
-    io.KeyAlt = io.KeysDown[GLFW_KEY_LEFT_ALT] || io.KeysDown[GLFW_KEY_RIGHT_ALT];
-    io.KeySuper = io.KeysDown[GLFW_KEY_LEFT_SUPER] || io.KeysDown[GLFW_KEY_RIGHT_SUPER];
-}
-
 void ImGui_ImplGlfwVulkan_CharCallback(GLFWwindow*, unsigned int c)
 {
     ImGuiIO& io = ImGui::GetIO();
@@ -483,6 +438,7 @@ bool ImGui_ImplGlfwVulkan_CreateFontsTexture(VkCommandBuffer command_buffer)
         region.imageSubresource.layerCount = 1;
         region.imageExtent.width = width;
         region.imageExtent.height = height;
+        region.imageExtent.depth = 1;
         vkCmdCopyBufferToImage(command_buffer, g_UploadBuffer, g_FontImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
         VkImageMemoryBarrier use_barrier[1] = {};
@@ -726,7 +682,7 @@ void    ImGui_ImplGlfwVulkan_InvalidateDeviceObjects()
     if (g_Pipeline)             { vkDestroyPipeline(g_Device, g_Pipeline, g_Allocator); g_Pipeline = VK_NULL_HANDLE; }
 }
 
-bool    ImGui_ImplGlfwVulkan_Init(GLFWwindow* window, bool install_callbacks, ImGui_ImplGlfwVulkan_Init_Data *init_data)
+bool ImGui_ImplGlfwVulkan_Init(void* window, bool install_callbacks, ImGui_ImplGlfwVulkan_Init_Data *init_data)
 {
     g_Allocator = init_data->allocator;
     g_Gpu = init_data->gpu;
@@ -736,9 +692,127 @@ bool    ImGui_ImplGlfwVulkan_Init(GLFWwindow* window, bool install_callbacks, Im
     g_DescriptorPool = init_data->descriptor_pool;
     g_CheckVkResult = init_data->check_vk_result;
 
-    g_Window = window;
-
     ImGuiIO& io = ImGui::GetIO();
+
+    io.RenderDrawListsFn = ImGui_ImplGlfwVulkan_RenderDrawLists;       // Alternatively you can set this to NULL and call ImGui::GetDrawData() after ImGui::Render() to get the same ImDrawData pointer.
+    io.SetClipboardTextFn = ImGui_ImplGlfwVulkan_SetClipboardText;
+    io.GetClipboardTextFn = ImGui_ImplGlfwVulkan_GetClipboardText;
+
+    ImGui_ImplGlfwVulkan_InitWindow(window, install_callbacks, io);
+
+    ImGui_ImplGlfwVulkan_CreateDeviceObjects();
+
+    return true;
+}
+
+void ImGui_ImplGlfwVulkan_Shutdown()
+{
+    ImGui_ImplGlfwVulkan_InvalidateDeviceObjects();
+    ImGui::Shutdown();
+}
+
+
+void ImGui_ImplGlfwVulkan_Render(VkCommandBuffer command_buffer)
+{
+    g_CommandBuffer = command_buffer;
+    ImGui::Render();
+    g_CommandBuffer = VK_NULL_HANDLE;
+    g_FrameIndex = (g_FrameIndex + 1) % IMGUI_VK_QUEUED_FRAMES;
+}
+
+//----------------------------------------------------------------------------------------------------------------
+// Window management
+//----------------------------------------------------------------------------------------------------------------
+
+#define IMGUI_VK_SDL2
+#if defined(IMGUI_VK_SDL2)
+#include "SDL2/include/SDL.h"
+#include "SDL2/include/SDL_syswm.h"
+
+SDL_Window *g_Window = NULL;
+
+void ImGui_ImplGlfwVulkan_InitWindow(void* window, bool install_callbacks, ImGuiIO& io)
+{
+    g_Window = (SDL_Window*)window;
+    io.ImeWindowHandle = g_Window;
+#ifdef _WIN32
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (SDL_GetWindowWMInfo(g_Window, &info)) {
+        io.ImeWindowHandle = info.info.win.window;
+    }
+#endif
+}
+
+void ImGui_ImplGlfwVulkan_NewFrame()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Setup display size (every frame to accommodate for window resizing)
+    int w, h;
+    int display_w, display_h;
+    SDL_GetWindowSize(g_Window, &w, &h);
+    // TODO
+    //glfwGetFramebufferSize(g_Window, &display_w, &display_h);
+    display_w = w;
+    display_h = h;
+    io.DisplaySize = ImVec2((float)w, (float)h);
+    io.DisplayFramebufferScale = ImVec2(w > 0 ? ((float)display_w / w) : 0, h > 0 ? ((float)display_h / h) : 0);
+
+    // Setup time step
+    double current_time = (double)(SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency();
+    io.DeltaTime = g_Time > 0.0 ? (float)(current_time - g_Time) : (float)(1.0f / 60.0f);
+    g_Time = current_time;
+
+    // Setup inputs
+    // (we already got mouse wheel, keyboard keys & characters from glfw callbacks polled in glfwPollEvents())
+    /*
+    if (glfwGetWindowAttrib(g_Window, GLFW_FOCUSED))
+    {
+    double mouse_x, mouse_y;
+    glfwGetCursorPos(g_Window, &mouse_x, &mouse_y);
+    io.MousePos = ImVec2((float)mouse_x, (float)mouse_y);   // Mouse position in screen coordinates (set to -1,-1 if no mouse / on another screen, etc.)
+    }
+    else
+    {
+    io.MousePos = ImVec2(-1, -1);
+    }
+
+    for (int i = 0; i < 3; i++)
+    {
+    io.MouseDown[i] = g_MousePressed[i] || glfwGetMouseButton(g_Window, i) != 0;    // If a mouse press event came, always pass it as "mouse held this frame", so we don't miss click-release events that are shorter than 1 frame.
+    g_MousePressed[i] = false;
+    }
+
+    io.MouseWheel = g_MouseWheel;
+    g_MouseWheel = 0.0f;
+
+    // Hide OS mouse cursor if ImGui is drawing it
+    glfwSetInputMode(g_Window, GLFW_CURSOR, io.MouseDrawCursor ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
+    */
+
+    // Start the frame
+    ImGui::NewFrame();
+}
+
+static const char* ImGui_ImplGlfwVulkan_GetClipboardText(void* user_data)
+{
+    return "";
+}
+
+static void ImGui_ImplGlfwVulkan_SetClipboardText(void* user_data, const char* text)
+{
+    
+}
+#endif
+
+// GLFW Data
+#if defined(IMGUI_VK_GLF)
+static GLFWwindow*  g_Window = NULL;
+
+void ImGui_ImplGlfwVulkan_InitWindow(void* window, bool install_callbacks, ImGuiIO& io)
+{
+    g_Window = window;
     io.KeyMap[ImGuiKey_Tab] = GLFW_KEY_TAB;                         // Keyboard mapping. ImGui will use those indices to peek into the io.KeyDown[] array.
     io.KeyMap[ImGuiKey_LeftArrow] = GLFW_KEY_LEFT;
     io.KeyMap[ImGuiKey_RightArrow] = GLFW_KEY_RIGHT;
@@ -759,9 +833,6 @@ bool    ImGui_ImplGlfwVulkan_Init(GLFWwindow* window, bool install_callbacks, Im
     io.KeyMap[ImGuiKey_Y] = GLFW_KEY_Y;
     io.KeyMap[ImGuiKey_Z] = GLFW_KEY_Z;
 
-    io.RenderDrawListsFn = ImGui_ImplGlfwVulkan_RenderDrawLists;       // Alternatively you can set this to NULL and call ImGui::GetDrawData() after ImGui::Render() to get the same ImDrawData pointer.
-    io.SetClipboardTextFn = ImGui_ImplGlfwVulkan_SetClipboardText;
-    io.GetClipboardTextFn = ImGui_ImplGlfwVulkan_GetClipboardText;
     io.ClipboardUserData = g_Window;
 #ifdef _WIN32
     io.ImeWindowHandle = glfwGetWin32Window(g_Window);
@@ -774,16 +845,32 @@ bool    ImGui_ImplGlfwVulkan_Init(GLFWwindow* window, bool install_callbacks, Im
         glfwSetKeyCallback(window, ImGui_ImplGlfwVulkan_KeyCallback);
         glfwSetCharCallback(window, ImGui_ImplGlfwVulkan_CharCallback);
     }
-
-    ImGui_ImplGlfwVulkan_CreateDeviceObjects();
-
-    return true;
 }
 
-void ImGui_ImplGlfwVulkan_Shutdown()
+void ImGui_ImplGlfwVulkan_MouseButtonCallback(GLFWwindow*, int button, int action, int /*mods*/)
 {
-    ImGui_ImplGlfwVulkan_InvalidateDeviceObjects();
-    ImGui::Shutdown();
+    if (action == GLFW_PRESS && button >= 0 && button < 3)
+        g_MousePressed[button] = true;
+}
+
+void ImGui_ImplGlfwVulkan_ScrollCallback(GLFWwindow*, double /*xoffset*/, double yoffset)
+{
+    g_MouseWheel += (float)yoffset; // Use fractional mouse wheel, 1.0 unit 5 lines.
+}
+
+void ImGui_ImplGlfwVulkan_KeyCallback(GLFWwindow*, int key, int, int action, int mods)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (action == GLFW_PRESS)
+        io.KeysDown[key] = true;
+    if (action == GLFW_RELEASE)
+        io.KeysDown[key] = false;
+
+    (void)mods; // Modifiers are not reliable across systems
+    io.KeyCtrl = io.KeysDown[GLFW_KEY_LEFT_CONTROL] || io.KeysDown[GLFW_KEY_RIGHT_CONTROL];
+    io.KeyShift = io.KeysDown[GLFW_KEY_LEFT_SHIFT] || io.KeysDown[GLFW_KEY_RIGHT_SHIFT];
+    io.KeyAlt = io.KeysDown[GLFW_KEY_LEFT_ALT] || io.KeysDown[GLFW_KEY_RIGHT_ALT];
+    io.KeySuper = io.KeysDown[GLFW_KEY_LEFT_SUPER] || io.KeysDown[GLFW_KEY_RIGHT_SUPER];
 }
 
 void ImGui_ImplGlfwVulkan_NewFrame()
@@ -832,10 +919,13 @@ void ImGui_ImplGlfwVulkan_NewFrame()
     ImGui::NewFrame();
 }
 
-void ImGui_ImplGlfwVulkan_Render(VkCommandBuffer command_buffer)
+static const char* ImGui_ImplGlfwVulkan_GetClipboardText(void* user_data)
 {
-    g_CommandBuffer = command_buffer;
-    ImGui::Render();
-    g_CommandBuffer = VK_NULL_HANDLE;
-    g_FrameIndex = (g_FrameIndex + 1) % IMGUI_VK_QUEUED_FRAMES;
+    return ""; // glfwGetClipboardString((GLFWwindow*)user_data);
 }
+
+static void ImGui_ImplGlfwVulkan_SetClipboardText(void* user_data, const char* text)
+{
+    //glfwSetClipboardString((GLFWwindow*)user_data, text);
+}
+#endif

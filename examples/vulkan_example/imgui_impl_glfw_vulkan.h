@@ -6,6 +6,10 @@
 // If you are new to ImGui, see examples/README.txt and documentation at the top of imgui.cpp.
 // https://github.com/ocornut/imgui
 
+#pragma once
+
+#include <imgui.h> 
+
 struct GLFWwindow;
 
 #define IMGUI_VK_QUEUED_FRAMES 2
@@ -21,7 +25,7 @@ struct ImGui_ImplGlfwVulkan_Init_Data
     void (*check_vk_result)(VkResult err);
 };
 
-IMGUI_API bool        ImGui_ImplGlfwVulkan_Init(GLFWwindow* window, bool install_callbacks, ImGui_ImplGlfwVulkan_Init_Data *init_data);
+IMGUI_API bool        ImGui_ImplGlfwVulkan_Init(void* window, bool install_callbacks, ImGui_ImplGlfwVulkan_Init_Data *init_data);
 IMGUI_API void        ImGui_ImplGlfwVulkan_Shutdown();
 IMGUI_API void        ImGui_ImplGlfwVulkan_NewFrame();
 IMGUI_API void        ImGui_ImplGlfwVulkan_Render(VkCommandBuffer command_buffer);
