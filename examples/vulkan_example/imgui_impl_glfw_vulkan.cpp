@@ -692,6 +692,7 @@ bool ImGui_ImplGlfwVulkan_Init(void* window, bool install_callbacks, ImGui_ImplG
     g_DescriptorPool = init_data->descriptor_pool;
     g_CheckVkResult = init_data->check_vk_result;
 
+    ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
 
     io.RenderDrawListsFn = ImGui_ImplGlfwVulkan_RenderDrawLists;       // Alternatively you can set this to NULL and call ImGui::GetDrawData() after ImGui::Render() to get the same ImDrawData pointer.
@@ -708,7 +709,7 @@ bool ImGui_ImplGlfwVulkan_Init(void* window, bool install_callbacks, ImGui_ImplG
 void ImGui_ImplGlfwVulkan_Shutdown()
 {
     ImGui_ImplGlfwVulkan_InvalidateDeviceObjects();
-    ImGui::Shutdown();
+    ImGui::DestroyContext();
 }
 
 
