@@ -360,6 +360,9 @@ bool    ImGui_ImplSdlGL3_Init(SDL_Window* window, const char* glsl_version)
     strcpy(g_GlslVersion, glsl_version);
     strcat(g_GlslVersion, "\n");
 
+    auto ctx = ImGui::CreateContext();
+    ImGui::SetCurrentContext(ctx);
+
     // Setup back-end capabilities flags
     ImGuiIO& io = ImGui::GetIO();
     io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors;   // We can honor GetMouseCursor() values (optional)
