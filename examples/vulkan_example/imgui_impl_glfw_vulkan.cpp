@@ -210,11 +210,19 @@ void ImGui_ImplGlfwVulkan_RenderDrawLists(ImDrawData* draw_data)
 
     // Upload Vertex and index Data:
     {
+        VkPhysicalDeviceProperties devProp;
+        vkGetPhysicalDeviceProperties(g_Gpu, &devProp);
+        vertex_size = devProp.limits.nonCoherentAtomSize;
+        auto getNonCoherentAtomSize = [&](uint32_t size) {
+            uint32_t newSize = 1 + ((size - 1) / devProp.limits.nonCoherentAtomSize);
+            return newSize * devProp.limits.nonCoherentAtomSize;
+        };
+
         ImDrawVert* vtx_dst;
         ImDrawIdx* idx_dst;
-        err = vkMapMemory(g_Device, g_VertexBufferMemory[g_FrameIndex], 0, vertex_size, 0, (void**)(&vtx_dst));
+        err = vkMapMemory(g_Device, g_VertexBufferMemory[g_FrameIndex], 0, getNonCoherentAtomSize(vertex_size), 0, (void**)(&vtx_dst));
         ImGui_ImplGlfwVulkan_VkResult(err);
-        err = vkMapMemory(g_Device, g_IndexBufferMemory[g_FrameIndex], 0, index_size, 0, (void**)(&idx_dst));
+        err = vkMapMemory(g_Device, g_IndexBufferMemory[g_FrameIndex], 0, getNonCoherentAtomSize(index_size), 0, (void**)(&idx_dst));
         ImGui_ImplGlfwVulkan_VkResult(err);
         for (int n = 0; n < draw_data->CmdListsCount; n++)
         {
@@ -227,10 +235,10 @@ void ImGui_ImplGlfwVulkan_RenderDrawLists(ImDrawData* draw_data)
         VkMappedMemoryRange range[2] = {};
         range[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         range[0].memory = g_VertexBufferMemory[g_FrameIndex];
-        range[0].size = vertex_size;
+        range[0].size = getNonCoherentAtomSize(vertex_size);
         range[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         range[1].memory = g_IndexBufferMemory[g_FrameIndex];
-        range[1].size = index_size;
+        range[1].size = getNonCoherentAtomSize(index_size);
         err = vkFlushMappedMemoryRanges(g_Device, 2, range);
         ImGui_ImplGlfwVulkan_VkResult(err);
         vkUnmapMemory(g_Device, g_VertexBufferMemory[g_FrameIndex]);
